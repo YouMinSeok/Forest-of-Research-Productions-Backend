@@ -19,14 +19,33 @@ def get_password_hash(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
-async def get_current_user(access_token: str = Cookie(None), db: AsyncIOMotorDatabase = Depends(get_database)):
-    """
-    쿠키 "access_token"에서 JWT 토큰을 읽어 사용자 정보를 반환합니다.
-    """
-    if not access_token:
-        raise HTTPException(status_code=401, detail="토큰이 제공되지 않았습니다.")
+def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
+    """Authorization 헤더에서 Bearer 토큰을 추출합니다."""
+    if not authorization:
+        return None
     try:
-        payload = jwt.decode(access_token, settings.SECRET_KEY, algorithms=["HS256"])
+        scheme, token = authorization.split(" ", 1)
+        if scheme.lower() == "bearer" and token:
+            return token.strip()
+    except ValueError:
+        pass
+    return None
+
+async def get_current_user(
+    access_token: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """
+    쿠키 또는 Authorization 헤더에서 JWT 토큰을 읽어 사용자 정보를 반환합니다.
+    """
+    # 1) 쿠키 우선, 없으면 Authorization 헤더 사용
+    token = access_token or _extract_bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="인증 토큰이 없습니다.")
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         user_id: str = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="토큰 정보가 부족합니다(sub).")

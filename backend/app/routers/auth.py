@@ -1,41 +1,44 @@
+# app/routers/auth.py
 import os
-from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Response, Cookie
+import secrets
+import logging
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Response, Cookie, Header
+from bson import ObjectId
+import jwt  # PyJWT
+
 from app.schemas.user import UserCreate, UserLogin
 from app.models.user import FindUsernameRequest, PasswordResetRequest, VerifyResetCodeRequest, NewPasswordRequest
 from app.core.database import db
-from app.utils.email import generate_verification_code, send_verification_email
-from datetime import datetime, timedelta
-import jwt  # PyJWT 사용
 from app.core.config import settings
+from app.utils.email import generate_verification_code, send_verification_email
 from app.utils.security import get_password_hash, verify_password
-import logging
-from bson import ObjectId
 
 router = APIRouter()
 logger = logging.getLogger("auth_router")
-# 로깅 레벨은 main.py에서 설정됨
 
-# settings.DEBUG를 사용하여 로컬/프로덕션 환경을 구분합니다.
+# 환경 구분
 is_local = settings.DEBUG
 
 def get_cookie_options():
+    # (프론트는 Authorization 헤더를 쓰지만, 여기 함수는 기존 흐름 호환용으로 남겨둠)
     if is_local:
-        # 로컬 환경 (HTTP)
         return {
             "httponly": True,
-            "max_age": 2592000,  # 30일 (30 * 24 * 60 * 60)
-            "secure": False,       # HTTP에서는 secure False
-            "samesite": "Lax",     # 기본적으로 Lax
-            "path": "/"            # 전체 경로 적용
+            "max_age": 2592000,  # 30일
+            "secure": False,
+            "samesite": "Lax",
+            "path": "/"
         }
     else:
-        # 프로덕션 환경 (HTTPS)
         return {
             "httponly": True,
-            "max_age": 2592000,  # 30일 (30 * 24 * 60 * 60)
-            "secure": True,        # HTTPS 환경에서는 True
-            "samesite": "None",    # cross-site 요청 허용
-            "path": "/"            # domain 옵션 제거
+            "max_age": 2592000,  # 30일
+            "secure": True,
+            "samesite": "None",
+            "path": "/"
         }
 
 def fix_mongo_object_ids(obj):
@@ -51,6 +54,47 @@ def fix_mongo_object_ids(obj):
         return new_obj
     return obj
 
+def _extract_token_from_auth_header(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    try:
+        scheme, token = authorization.split(" ", 1)
+        if scheme.lower() == "bearer" and token:
+            return token.strip()
+    except ValueError:
+        return None
+    return None
+
+# =========================
+# 🔐 AT/RT 유틸 (추가)
+# =========================
+def _now_utc() -> datetime:
+    return datetime.utcnow().replace(tzinfo=None)
+
+def _make_access_token(user, minutes: Optional[int] = None):
+    # settings에 값이 아직 없다면 기본값 사용 (2시간)
+    default_minutes = getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 120)
+    exp_minutes = minutes if minutes is not None else default_minutes
+
+    current_time = _now_utc()
+    expiry_time = current_time + timedelta(minutes=exp_minutes)
+
+    payload = {
+        "sub": str(user["_id"]),
+        "name": user["name"],
+        "email": user["email"],
+        "exp": int(expiry_time.timestamp())  # Unix timestamp로 변환
+    }
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=getattr(settings, "ALGORITHM", "HS256"))
+    return token, expiry_time
+
+def _make_refresh_token() -> str:
+    # 간단히 무작위 문자열 사용 (DB에 평문 저장). 필요 시 해시 저장으로 강화 가능.
+    return secrets.token_urlsafe(64)
+
+# =========================
+# 회원가입 / 이메일 인증
+# =========================
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 async def signup(user: UserCreate, background_tasks: BackgroundTasks):
     existing_name = await db.users.find_one({"name": user.name})
@@ -84,7 +128,7 @@ async def signup(user: UserCreate, background_tasks: BackgroundTasks):
         "created_at": datetime.utcnow()
     })
 
-    logger.info(f"회원가입: {user.email} 에 대해 인증 코드 {code} 발송 (만료: {expires_at})")
+    logger.info(f"회원가입: {user.email} 에 인증 코드 {code} 발송 (만료: {expires_at})")
     background_tasks.add_task(send_verification_email, user.email, code)
 
     return {
@@ -122,27 +166,17 @@ async def verify_code(data: dict, response: Response):
     if not user:
         raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
 
-    current_time = datetime.utcnow()
-    expiry_time = current_time + timedelta(days=30)  # 30일로 대폭 연장
-    logger.info(f"이메일 인증 토큰 생성 - 현재 시간: {current_time}, 만료 시간: {expiry_time}")
-
-    payload = {
-        "sub": str(user["_id"]),
-        "name": user["name"],
-        "email": user["email"],
-        "exp": expiry_time
-    }
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
-
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        **get_cookie_options()
-    )
+    # (프론트는 헤더를 사용하므로 쿠키는 필수 아님. 기존 호환을 위해 남겨둠)
+    # 굳이 access 쿠키를 설정할 필요는 없음. 필요 시 주석 해제해서 사용 가능.
+    # token, _ = _make_access_token(user)
+    # response.set_cookie(key="access_token", value=token, **get_cookie_options())
 
     logger.info(f"{email} 인증 완료, 계정 활성화됨.")
     return {"message": "이메일 인증 완료. 계정이 활성화되었습니다."}
 
+# =========================
+# 로그인 / 로그아웃 / 내 정보
+# =========================
 @router.post("/login", status_code=status.HTTP_200_OK)
 async def login(user: UserLogin, response: Response):
     existing = await db.users.find_one({"email": user.email})
@@ -153,36 +187,29 @@ async def login(user: UserLogin, response: Response):
     if not existing.get("is_active", False):
         raise HTTPException(status_code=400, detail="계정이 활성화되지 않았습니다. 이메일 인증을 진행해주세요.")
 
-    current_time = datetime.utcnow()
-    expiry_time = current_time + timedelta(days=30)  # 30일로 대폭 연장
-    logger.info(f"로그인 토큰 생성 - 현재 시간: {current_time}, 만료 시간: {expiry_time}")
+    current_time = _now_utc()
 
-    payload = {
-        "sub": str(existing["_id"]),
-        "name": existing["name"],
-        "email": existing["email"],
-        "exp": expiry_time
-    }
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    # Access / Refresh 발급
+    access_token, access_exp = _make_access_token(existing)
+    refresh_token = _make_refresh_token()
+    refresh_days = getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 30)
+    refresh_exp = current_time + timedelta(days=refresh_days)
 
-    # 마지막 로그인 시간 업데이트
+    # 마지막 로그인 & RT 저장 (단일 RT 정책)
     await db.users.update_one(
-        {"email": existing["email"]},
-        {"$set": {"last_login": current_time}}
+        {"_id": existing["_id"]},
+        {"$set": {"last_login": current_time, "refresh_token": refresh_token, "refresh_exp": refresh_exp}}
     )
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        **get_cookie_options()
-    )
+    logger.info(f"{existing['email']} 로그인 성공, AT/RT 발급.")
 
-    logger.info(f"{existing['email']} 로그인 성공, JWT 토큰 발급됨.")
-
-    # 클라이언트에서 사용할 수 있도록 토큰과 사용자 정보를 응답에 포함
+    # 프론트는 헤더 토큰 사용 → 쿠키 설정 불필요
     return {
         "message": "로그인 성공",
-        "access_token": token,
+        "access_token": access_token,
+        "access_exp": int(access_exp.timestamp()),
+        "refresh_token": refresh_token,
+        "refresh_exp": int(refresh_exp.timestamp()),
         "user": {
             "id": str(existing["_id"]),
             "name": existing["name"],
@@ -192,12 +219,17 @@ async def login(user: UserLogin, response: Response):
     }
 
 @router.put("/profile", status_code=status.HTTP_200_OK)
-async def update_profile(profile_data: dict, access_token: str = Cookie(None)):
+async def update_profile(
+    profile_data: dict,
+    access_token: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+):
     """사용자 프로필 업데이트 (이름만 가능)"""
-    if not access_token:
+    token = access_token or _extract_token_from_auth_header(authorization)
+    if not token:
         raise HTTPException(status_code=401, detail="토큰이 제공되지 않았습니다.")
     try:
-        payload = jwt.decode(access_token, settings.SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[getattr(settings, "ALGORITHM", "HS256")])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
     except jwt.PyJWTError:
@@ -207,18 +239,12 @@ async def update_profile(profile_data: dict, access_token: str = Cookie(None)):
     if not user:
         raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
 
-    # 업데이트할 수 있는 필드 제한 (보안)
     allowed_fields = ["name"]
-    update_data = {}
-
-    for field in allowed_fields:
-        if field in profile_data and profile_data[field]:
-            update_data[field] = profile_data[field]
+    update_data = {k: v for k, v in profile_data.items() if k in allowed_fields and v}
 
     if not update_data:
         raise HTTPException(status_code=400, detail="업데이트할 유효한 데이터가 없습니다.")
 
-    # 이름 중복 체크
     if "name" in update_data:
         existing_name = await db.users.find_one({
             "name": update_data["name"],
@@ -227,28 +253,25 @@ async def update_profile(profile_data: dict, access_token: str = Cookie(None)):
         if existing_name:
             raise HTTPException(status_code=400, detail="이미 사용중인 이름입니다.")
 
-    # 업데이트 실행
-    await db.users.update_one(
-        {"_id": user["_id"]},
-        {"$set": update_data}
-    )
+    await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
 
-    # 업데이트된 사용자 정보 반환
     updated_user = await db.users.find_one({"_id": user["_id"]})
     updated_user["_id"] = str(updated_user["_id"])
     updated_user.pop("password", None)
 
-    return {
-        "message": "프로필이 업데이트되었습니다.",
-        "user": updated_user
-    }
+    return {"message": "프로필이 업데이트되었습니다.", "user": updated_user}
 
 @router.get("/me", status_code=status.HTTP_200_OK)
-async def get_current_user_endpoint(access_token: str = Cookie(None)):
-    if not access_token:
+async def get_current_user_endpoint(
+    access_token: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+):
+    """현재 로그인 사용자 정보 (Authorization 헤더 우선, 쿠키는 보조)"""
+    token = access_token or _extract_token_from_auth_header(authorization)
+    if not token:
         raise HTTPException(status_code=401, detail="토큰이 제공되지 않았습니다.")
     try:
-        payload = jwt.decode(access_token, settings.SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[getattr(settings, "ALGORITHM", "HS256")])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
     except jwt.PyJWTError:
@@ -263,24 +286,59 @@ async def get_current_user_endpoint(access_token: str = Cookie(None)):
     return {"user": user}
 
 @router.post("/logout", status_code=status.HTTP_200_OK)
-async def logout(response: Response):
+async def logout(response: Response, data: Optional[dict] = None):
+    """로그아웃: 전달된 refresh_token을 폐기(권장)."""
+    refresh_token = (data or {}).get("refresh_token") if isinstance(data, dict) else None
+    if refresh_token:
+        await db.users.update_one({"refresh_token": refresh_token}, {"$unset": {"refresh_token": "", "refresh_exp": ""}})
+    # (쿠키는 현재 사용하지 않지만 기존 호환)
     response.delete_cookie("access_token")
     return {"message": "로그아웃 성공"}
 
-# 아이디 찾기 API
+# =========================
+# 🔁 리프레시 토큰 엔드포인트 (추가)
+# =========================
+@router.post("/refresh", status_code=status.HTTP_200_OK)
+async def refresh_token_endpoint(data: dict):
+    """
+    바디로 { "refresh_token": "..." }를 받아 Access Token 재발급.
+    """
+    refresh_token = data.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="refresh_token이 필요합니다.")
+
+    user = await db.users.find_one({"refresh_token": refresh_token})
+    if not user:
+        raise HTTPException(status_code=401, detail="유효하지 않은 리프레시 토큰입니다.")
+
+    refresh_exp = user.get("refresh_exp")
+    if not refresh_exp:
+        raise HTTPException(status_code=401, detail="리프레시 토큰 만료 정보가 없습니다.")
+    if refresh_exp.tzinfo is not None:
+        refresh_exp = refresh_exp.replace(tzinfo=None)
+
+    if _now_utc() >= refresh_exp:
+        await db.users.update_one({"_id": user["_id"]}, {"$unset": {"refresh_token": "", "refresh_exp": ""}})
+        raise HTTPException(status_code=401, detail="리프레시 토큰이 만료되었습니다. 다시 로그인해주세요.")
+
+    access_token, access_exp = _make_access_token(user)
+    return {
+        "access_token": access_token,
+        "access_exp": int(access_exp.timestamp())
+    }
+
+# =========================
+# 아이디 / 비밀번호 찾기
+# =========================
 @router.post("/find-username", status_code=status.HTTP_200_OK)
 async def find_username(request: FindUsernameRequest):
-    """이름, 학번으로 아이디(이메일) 찾기"""
-    # 이름과 학번으로 사용자 찾기
     user = await db.users.find_one({
         "name": request.name,
         "student_number": request.student_number
     })
-
     if not user:
         raise HTTPException(status_code=404, detail="일치하는 회원 정보를 찾을 수 없습니다.")
 
-    # 이메일의 일부를 마스킹 처리
     email = user["email"]
     username, domain = email.split('@')
     if len(username) > 3:
@@ -289,30 +347,22 @@ async def find_username(request: FindUsernameRequest):
         masked_username = username[0] + '*' * (len(username) - 1)
     masked_email = f"{masked_username}@{domain}"
 
-    return {
-        "message": f"해당회원님의 아이디는 {masked_email}입니다.",
-        "username": masked_email
-    }
+    return {"message": f"해당회원님의 아이디는 {masked_email}입니다.", "username": masked_email}
 
-# 비밀번호 찾기 - 회원정보 확인 및 인증번호 발송
 @router.post("/request-password-reset", status_code=status.HTTP_200_OK)
 async def request_password_reset(request: PasswordResetRequest, background_tasks: BackgroundTasks):
-    """이름, 학번, 이메일로 회원정보 확인 후 인증번호 발송"""
     user = await db.users.find_one({
         "name": request.name,
         "student_number": request.student_number,
         "email": request.email
     })
-
     if not user:
         raise HTTPException(status_code=404, detail="일치하는 회원 정보를 찾을 수 없습니다.")
 
-    # 기존 비밀번호 재설정 요청 삭제
     await db.password_reset.delete_many({"email": request.email})
 
-    # 새 인증번호 생성
     code = generate_verification_code()
-    expires_at = datetime.utcnow() + timedelta(minutes=10)  # 10분 유효
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
 
     await db.password_reset.insert_one({
         "email": request.email,
@@ -321,18 +371,13 @@ async def request_password_reset(request: PasswordResetRequest, background_tasks
         "created_at": datetime.utcnow()
     })
 
-    logger.info(f"비밀번호 재설정: {request.email}에 대해 인증 코드 {code} 발송 (만료: {expires_at})")
+    logger.info(f"비밀번호 재설정: {request.email} 에 인증 코드 {code} 발송 (만료: {expires_at})")
     background_tasks.add_task(send_verification_email, request.email, code)
 
-    return {
-        "message": "회원정보가 확인되었습니다. 이메일로 인증번호가 발송되었습니다.",
-        "email": request.email
-    }
+    return {"message": "회원정보가 확인되었습니다. 이메일로 인증번호가 발송되었습니다.", "email": request.email}
 
-# 비밀번호 재설정용 인증번호 확인
 @router.post("/verify-reset-code", status_code=status.HTTP_200_OK)
 async def verify_reset_code(request: VerifyResetCodeRequest):
-    """비밀번호 재설정용 인증번호 확인"""
     record = await db.password_reset.find_one({"email": request.email})
     if not record:
         raise HTTPException(status_code=404, detail="인증 정보가 존재하지 않습니다.")
@@ -344,20 +389,13 @@ async def verify_reset_code(request: VerifyResetCodeRequest):
 
     if current_time > expires_at:
         raise HTTPException(status_code=400, detail="인증 코드가 만료되었습니다.")
-
     if record["code"] != request.code:
         raise HTTPException(status_code=400, detail="인증 코드가 일치하지 않습니다.")
 
-    return {
-        "message": "인증번호가 확인되었습니다. 새 비밀번호를 설정해주세요.",
-        "verified": True
-    }
+    return {"message": "인증번호가 확인되었습니다. 새 비밀번호를 설정해주세요.", "verified": True}
 
-# 새 비밀번호 설정
 @router.post("/reset-password", status_code=status.HTTP_200_OK)
 async def reset_password(request: NewPasswordRequest):
-    """새 비밀번호 설정"""
-    # 인증번호 다시 확인
     record = await db.password_reset.find_one({"email": request.email})
     if not record:
         raise HTTPException(status_code=404, detail="인증 정보가 존재하지 않습니다.")
@@ -369,46 +407,28 @@ async def reset_password(request: NewPasswordRequest):
 
     if current_time > expires_at:
         raise HTTPException(status_code=400, detail="인증 코드가 만료되었습니다.")
-
     if record["code"] != request.code:
         raise HTTPException(status_code=400, detail="인증 코드가 일치하지 않습니다.")
 
-    # 사용자 존재 확인
     user = await db.users.find_one({"email": request.email})
     if not user:
         raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
 
-    # 새 비밀번호 해시화 및 업데이트
     hashed_password = get_password_hash(request.new_password)
-    await db.users.update_one(
-        {"email": request.email},
-        {"$set": {"password": hashed_password}}
-    )
-
-    # 인증 기록 삭제
+    await db.users.update_one({"email": request.email}, {"$set": {"password": hashed_password}})
     await db.password_reset.delete_one({"email": request.email})
 
     logger.info(f"비밀번호 재설정 완료: {request.email}")
-
-    return {
-        "message": "비밀번호가 성공적으로 변경되었습니다."
-    }
+    return {"message": "비밀번호가 성공적으로 변경되었습니다."}
 
 @router.post("/check-duplicate")
 async def check_duplicate(request: dict):
-    """
-    중복검사 API
-    """
     field = request.get("field")
     value = request.get("value")
 
     if not field or not value:
         raise HTTPException(status_code=400, detail="field와 value가 필요합니다.")
 
-    # MongoDB 컬렉션
-    db = get_db()
-
-    # 필드에 따른 검색 조건
     query = {}
     if field == "email":
         query = {"email": value}
@@ -419,9 +439,7 @@ async def check_duplicate(request: dict):
     else:
         raise HTTPException(status_code=400, detail="유효하지 않은 필드입니다.")
 
-    # 중복 확인
     existing_user = await db.users.find_one(query)
-
     if existing_user:
         if field == "email":
             raise HTTPException(status_code=400, detail="이미 사용중인 이메일입니다.")
