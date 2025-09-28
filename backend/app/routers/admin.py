@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from bson import ObjectId
 import os
+from pydantic import BaseModel
 from ..core.database import db
 from ..core.config import settings
 from ..models.user import User, UserUpdate, UserResponse
@@ -10,6 +11,9 @@ from ..models.permission import PermissionType, UserRole, UserRoleUpdate
 from ..utils.permissions import PermissionManager
 from ..utils.security import get_password_hash
 from ..utils.auth_middleware import get_current_user
+
+class PermissionRequest(BaseModel):
+    permission: str
 
 router = APIRouter(tags=["admin"])
 
@@ -287,11 +291,24 @@ async def update_user(
 @router.post("/users/{user_id}/permissions")
 async def add_user_permission(
     user_id: str,
-    permission: PermissionType,
+    request: PermissionRequest,
     current_user: User = Depends(require_admin_permission)
 ):
     """사용자에게 권한 추가"""
     try:
+        # 요청된 권한이 유효한 PermissionType인지 확인
+        try:
+            permission = PermissionType(request.permission)
+        except ValueError:
+            valid_permissions = [perm.value for perm in PermissionType]
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "요청 데이터 형식이 올바르지 않습니다.",
+                    "details": [f"유효하지 않은 권한입니다. 가능한 권한: {valid_permissions}"]
+                }
+            )
+
         result = await db.users.update_one(
             {"_id": ObjectId(user_id)},
             {"$addToSet": {"permissions": permission.value}}
@@ -301,8 +318,16 @@ async def add_user_permission(
             raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
         return {"message": f"사용자에게 {permission.value} 권한이 추가되었습니다."}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"권한 추가 실패: {str(e)}")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "요청 데이터 형식이 올바르지 않습니다.",
+                "details": [f"권한 추가 실패: {str(e)}"]
+            }
+        )
 
 @router.delete("/users/{user_id}/permissions/{permission}")
 async def remove_user_permission(
