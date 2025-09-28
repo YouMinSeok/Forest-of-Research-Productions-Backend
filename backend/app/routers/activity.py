@@ -198,6 +198,10 @@ async def get_recent_comments(limit: int = 10, db=Depends(get_database), user=De
         recent_comments = await recent_comments_cursor.to_list(length=limit)
 
         for comment in recent_comments:
+            # comment가 null이거나 필수 필드가 없으면 건너뛰기
+            if not comment or not comment.get("post_id") or not comment.get("writer"):
+                continue
+
             # 해당 댓글의 게시글 정보 조회
             board_collection = db["board"]
             try:
@@ -229,7 +233,8 @@ async def get_recent_comments(limit: int = 10, db=Depends(get_database), user=De
                     post_prefix = ""
                     comment_author = comment.get("writer", "익명")
 
-            except:
+            except Exception as e:
+                print(f"Error processing comment {comment.get('_id')}: {e}")
                 post_title = "게시글 없음"
                 board_name = "일반"
                 post_prefix = ""
@@ -239,20 +244,22 @@ async def get_recent_comments(limit: int = 10, db=Depends(get_database), user=De
             comment_content = comment.get("content", "").strip()
             content_preview = comment_content[:60] + "..." if len(comment_content) > 60 else comment_content
 
-            activity = {
-                "type": "comment",
-                "title": post_title,  # 게시글 제목만 표시
-                "author": comment_author,
-                "date": comment.get("date"),
-                "board": board_name,
-                "prefix": post_prefix,  # 말머리 정보 추가
-                "post_id": comment.get("post_id"),
-                "comment_id": str(comment["_id"]),
-                "content": content_preview,
-                "parent_comment_id": comment.get("parent_comment_id"),  # 답글 여부 판단을 위해 추가
-                "id": comment.get("post_id")  # navigateToPost에서 사용하는 id 필드 추가
-            }
-            activities.append(activity)
+            # 필수 필드가 모두 있는지 확인
+            if comment_author and post_title and comment.get("date"):
+                activity = {
+                    "type": "comment",
+                    "title": post_title,  # 게시글 제목만 표시
+                    "author": comment_author,
+                    "date": comment.get("date"),
+                    "board": board_name,
+                    "prefix": post_prefix,  # 말머리 정보 추가
+                    "post_id": comment.get("post_id"),
+                    "comment_id": str(comment["_id"]),
+                    "content": content_preview,
+                    "parent_comment_id": comment.get("parent_comment_id"),  # 답글 여부 판단을 위해 추가
+                    "id": comment.get("post_id")  # navigateToPost에서 사용하는 id 필드 추가
+                }
+                activities.append(activity)
 
         return activities
 
