@@ -105,20 +105,40 @@ class PermissionManager:
         else:  # 이미 딕셔너리인 경우
             user_dict = user
 
+        user_permissions = user_dict.get("permissions", [])
+        user_role = user_dict.get("role", "student").lower()
+
+        # is_admin 체크: role이 admin이거나, is_admin이 True이거나, permissions에 admin이 있는 경우
         is_admin = (
             user_dict.get("is_admin", False) or
-            user_dict.get("role", "").lower() == "admin"
+            user_role == "admin" or
+            "admin" in user_permissions
         )
 
-        user_role = user_dict.get("role", "student").lower()
-        has_manage_boards = user_role in ["admin", "professor"] or is_admin
-        has_manage_users = user_role in ["admin"] or is_admin
+        # 권한별 체크: role 기반 + permissions 배열 기반
+        has_manage_boards = (
+            user_role in ["admin", "professor"] or
+            is_admin or
+            "manage_boards" in user_permissions
+        )
+
+        has_manage_users = (
+            user_role == "admin" or
+            is_admin or
+            "manage_users" in user_permissions
+        )
+
+        can_write = (
+            user_role in ["admin", "professor", "student"] or
+            is_admin or
+            "write" in user_permissions
+        )
 
         return {
             "is_admin": is_admin,
             "has_manage_boards": has_manage_boards,
             "has_manage_users": has_manage_users,
-            "can_write": user_role in ["admin", "professor", "student"] or is_admin,
+            "can_write": can_write,
             "can_read": True  # 모든 사용자는 읽기 가능
         }
 
