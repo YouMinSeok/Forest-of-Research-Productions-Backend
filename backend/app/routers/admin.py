@@ -19,7 +19,14 @@ router = APIRouter(tags=["admin"])
 
 async def require_admin_permission(current_user: User = Depends(get_current_user)):
     """어드민 권한 확인"""
-    if not current_user.is_admin and not PermissionManager.is_admin_email(current_user.email):
+    is_admin = (
+        current_user.is_admin or
+        PermissionManager.is_admin_email(current_user.email) or
+        "admin" in current_user.permissions or
+        current_user.role.value == "admin" if hasattr(current_user.role, 'value') else current_user.role == "admin"
+    )
+
+    if not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="관리자 권한이 필요합니다."
