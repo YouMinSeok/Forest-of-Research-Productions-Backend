@@ -1,8 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Cookie
+from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from bson import ObjectId
-import jwt
 import os
 from ..core.database import db
 from ..core.config import settings
@@ -10,27 +9,13 @@ from ..models.user import User, UserUpdate, UserResponse
 from ..models.permission import PermissionType, UserRole, UserRoleUpdate
 from ..utils.permissions import PermissionManager
 from ..utils.security import get_password_hash
+from ..utils.auth_middleware import get_current_user
 
 router = APIRouter(tags=["admin"])
 
-async def get_current_user_from_token(access_token: str = Cookie(None)) -> dict:
-    """JWT 토큰에서 현재 사용자 정보 추출"""
-    if not access_token:
-        raise HTTPException(status_code=401, detail="토큰이 제공되지 않았습니다.")
-    try:
-        payload = jwt.decode(access_token, settings.SECRET_KEY, algorithms=["HS256"])
-        user = await db.users.find_one({"email": payload["email"]})
-        if not user:
-            raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
-
-async def require_admin_permission(current_user: dict = Depends(get_current_user_from_token)):
+async def require_admin_permission(current_user: User = Depends(get_current_user)):
     """어드민 권한 확인"""
-    if not getattr(current_user, 'is_admin', False) and not PermissionManager.is_admin_email(getattr(current_user, 'email', '')):
+    if not current_user.is_admin and not PermissionManager.is_admin_email(current_user.email):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="관리자 권한이 필요합니다."
@@ -67,7 +52,7 @@ async def initialize_admin():
     }
 
 @router.get("/dashboard/stats")
-async def get_dashboard_stats(current_user: dict = Depends(require_admin_permission)):
+async def get_dashboard_stats(current_user: User = Depends(require_admin_permission)):
     """어드민 대시보드 통계 정보"""
 
     # 실제 사용자 통계
@@ -105,7 +90,7 @@ async def get_dashboard_stats(current_user: dict = Depends(require_admin_permiss
     return stats
 
 @router.get("/dashboard/recent-activities")
-async def get_recent_activities(current_user: dict = Depends(require_admin_permission)):
+async def get_recent_activities(current_user: User = Depends(require_admin_permission)):
     """최근 활동 로그"""
 
     activities = []
@@ -181,7 +166,7 @@ async def get_all_users(
     limit: int = 20,
     role: str = None,
     search: str = None,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ) -> Dict[str, Any]:
     """모든 사용자 목록 조회"""
 
@@ -229,7 +214,7 @@ async def get_all_users(
 @router.get("/users/{user_id}")
 async def get_user_detail(
     user_id: str,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """특정 사용자 상세 정보"""
     try:
@@ -255,7 +240,7 @@ async def get_user_detail(
 async def update_user(
     user_id: str,
     user_update: UserUpdate,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """사용자 정보 업데이트"""
     try:
@@ -303,7 +288,7 @@ async def update_user(
 async def add_user_permission(
     user_id: str,
     permission: PermissionType,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """사용자에게 권한 추가"""
     try:
@@ -323,7 +308,7 @@ async def add_user_permission(
 async def remove_user_permission(
     user_id: str,
     permission: str,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """사용자에게서 권한 제거"""
     try:
@@ -342,7 +327,7 @@ async def remove_user_permission(
 @router.post("/users/{user_id}/activate")
 async def activate_user(
     user_id: str,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """사용자 활성화"""
     try:
@@ -361,7 +346,7 @@ async def activate_user(
 @router.post("/users/{user_id}/deactivate")
 async def deactivate_user(
     user_id: str,
-    current_user: dict = Depends(require_admin_permission)
+    current_user: User = Depends(require_admin_permission)
 ):
     """사용자 비활성화"""
     try:
@@ -378,7 +363,7 @@ async def deactivate_user(
         raise HTTPException(status_code=400, detail=f"사용자 비활성화 실패: {str(e)}")
 
 @router.get("/permissions")
-async def get_all_permissions(current_user: dict = Depends(require_admin_permission)):
+async def get_all_permissions(current_user: User = Depends(require_admin_permission)):
     """모든 권한 목록"""
     permissions = [
         {
@@ -390,7 +375,7 @@ async def get_all_permissions(current_user: dict = Depends(require_admin_permiss
     return permissions
 
 @router.get("/roles")
-async def get_all_roles(current_user: dict = Depends(require_admin_permission)):
+async def get_all_roles(current_user: User = Depends(require_admin_permission)):
     """모든 역할 목록과 기본 권한"""
     roles = []
     for role in UserRole:
@@ -402,7 +387,7 @@ async def get_all_roles(current_user: dict = Depends(require_admin_permission)):
     return roles
 
 @router.get("/system/health")
-async def get_system_health(current_user: dict = Depends(require_admin_permission)):
+async def get_system_health(current_user: User = Depends(require_admin_permission)):
     """시스템 상태 확인"""
     try:
         # MongoDB 연결 테스트
