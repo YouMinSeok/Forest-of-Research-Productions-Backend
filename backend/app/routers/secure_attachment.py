@@ -545,11 +545,18 @@ async def secure_download_file(
                 attachment["file_size"], ip_address
             )
 
-            # 8. 파일 응답
+            # 8. 파일 응답 (한글 파일명 처리 개선)
+            headers = {
+                "Content-Disposition": _create_content_disposition_header(attachment["original_filename"]),
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, no-cache"
+            }
+
             return FileResponse(
                 path=file_path,
                 filename=attachment["original_filename"],
-                media_type=attachment["mime_type"]
+                media_type=attachment["mime_type"] or "application/octet-stream",
+                headers=headers
             )
 
     except HTTPException as http_ex:
