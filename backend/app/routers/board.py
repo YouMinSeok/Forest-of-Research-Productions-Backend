@@ -544,6 +544,14 @@ async def list_posts(
 
             if can_see_private:
                 post["id"] = str(post["_id"])
+                # 비공개 게시글이지만 접근 권한이 있는 경우 작성자 role 정보 추가
+                writer_id = post.get("writer_id")
+                if writer_id and writer_id in writer_roles:
+                    post["writer_role"] = writer_roles[writer_id]["role"]
+                    post["writer_is_admin"] = writer_roles[writer_id]["is_admin"]
+                else:
+                    post["writer_role"] = "student"
+                    post["writer_is_admin"] = False
             else:
                 post["id"] = str(post["_id"])
                 post["title"] = "🔒 비공개 게시글입니다"
