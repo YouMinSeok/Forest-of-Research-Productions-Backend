@@ -167,27 +167,27 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # -------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 연구실 게시판 시스템 시작 중...")
+    logger.info(" 연구실 게시판 시스템 시작 중...")
     try:
         await connect_to_mongo()
 
         try:
             from app.core.database_setup import setup_chat_database
             await setup_chat_database()
-            logger.info("✅ 채팅 데이터베이스 스키마 설정 완료!")
+            logger.info(" 채팅 데이터베이스 스키마 설정 완료!")
         except Exception as e:
             logger.warning(f"⚠️ 채팅 데이터베이스 스키마 설정 실패 (무시 가능): {e}")
 
         try:
-            logger.info("🤖 AI 서비스는 별도 마이크로서비스(ai-service:8001)로 실행됩니다.")
+            logger.info(" AI 서비스는 별도 마이크로서비스(ai-service:8001)로 실행됩니다.")
         except Exception as e:
-            logger.error(f"❌ AI 시스템 확인 실패: {e}")
+            logger.error(f" AI 시스템 확인 실패: {e}")
 
         try:
             from app.utils.scheduler import init_scheduler
             from app.core.database import get_database
 
-            logger.info("🔄 엔터프라이즈 파일 시스템 스케줄러 초기화 중...")
+            logger.info(" 엔터프라이즈 파일 시스템 스케줄러 초기화 중...")
 
             scheduler_config = {
                 "upload_dir": "uploads",
@@ -199,39 +199,39 @@ async def startup_event():
 
             db = await get_database()
             init_scheduler(scheduler_config, db)
-            logger.info("✅ 엔터프라이즈 파일 시스템 스케줄러 시작 완료!")
+            logger.info(" 엔터프라이즈 파일 시스템 스케줄러 시작 완료!")
 
         except Exception as e:
-            logger.error(f"❌ 엔터프라이즈 스케줄러 초기화 실패: {e}")
-            logger.info("🔄 스케줄러 없이 기본 기능으로 계속 실행...")
+            logger.error(f" 엔터프라이즈 스케줄러 초기화 실패: {e}")
+            logger.info(" 스케줄러 없이 기본 기능으로 계속 실행...")
 
         memory = psutil.virtual_memory()
         cpu_count = psutil.cpu_count()
-        logger.info(f"💾 시스템 메모리: {memory.total / (1024**3):.1f}GB (사용률: {memory.percent}%)")
-        logger.info(f"🔧 CPU 코어: {cpu_count}개")
-        logger.info(f"🖥️ 운영체제: {os.name} ({sys.platform})")
+        logger.info(f" 시스템 메모리: {memory.total / (1024**3):.1f}GB (사용률: {memory.percent}%)")
+        logger.info(f" CPU 코어: {cpu_count}개")
+        logger.info(f" 운영체제: {os.name} ({sys.platform})")
 
-        logger.info("✅ 연구실 게시판 시스템 시작 완료!")
+        logger.info(" 연구실 게시판 시스템 시작 완료!")
 
     except Exception as e:
         logger.error(f"❌ 시스템 시작 실패: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("⏹️ 연구실 게시판 시스템 종료 중...")
+    logger.info("⏹ 연구실 게시판 시스템 종료 중...")
     try:
         try:
             from app.utils.scheduler import shutdown_scheduler
             shutdown_scheduler()
-            logger.info("✅ 엔터프라이즈 스케줄러 정리 완료!")
+            logger.info(" 엔터프라이즈 스케줄러 정리 완료!")
         except Exception as e:
-            logger.warning(f"⚠️ 엔터프라이즈 스케줄러 정리 실패: {e}")
+            logger.warning(f" 엔터프라이즈 스케줄러 정리 실패: {e}")
 
-        logger.info("🤖 AI 서비스는 별도 컨테이너에서 관리됩니다.")
+        logger.info(" AI 서비스는 별도 컨테이너에서 관리됩니다.")
         await close_mongo_connection()
-        logger.info("✅ 모든 연결이 안전하게 종료되었습니다.")
+        logger.info(" 모든 연결이 안전하게 종료되었습니다.")
     except Exception as e:
-        logger.error(f"❌ 종료 중 오류: {e}")
+        logger.error(f" 종료 중 오류: {e}")
 
 # -------------------------
 # 상태/통계 엔드포인트

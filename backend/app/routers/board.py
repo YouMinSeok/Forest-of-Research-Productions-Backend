@@ -994,22 +994,31 @@ async def get_all_recent_posts(limit: int = 50, db=Depends(get_database)):
 
 @router.get("/all/by-category")
 async def get_posts_by_category(db=Depends(get_database)):
+    """새로운 게시판 구조에 맞게 카테고리별 게시글 조회"""
     collection = db["board"]
 
-    categories = {
-        "자유": "자유",
-        "연구자료": "연구",
-        "제출자료": "연구",
-        "제안서": "연구"
-    }
+    # 새로운 게시판 구조
+    # 랩실운영: 행정_제출서류, 회의_세미나자료, 비품_정산관리
+    # 연구자산: 연구_참고자료, 논문_아카이브, 실험_데이터, 코드_저장소
+    boards = [
+        # 랩실운영
+        "행정_제출서류",
+        "회의_세미나자료",
+        "비품_정산관리",
+        # 연구자산
+        "연구_참고자료",
+        "논문_아카이브",
+        "실험_데이터",
+        "코드_저장소",
+        # 기본 게시판
+        "공지사항",
+        "뉴스"
+    ]
 
     result = {}
 
-    for category_name, board_type in categories.items():
-        if board_type == "연구":
-            query = {"board": board_type, "subcategory": category_name}
-        else:
-            query = {"board": board_type}
+    for board_name in boards:
+        query = {"board": board_name}
 
         posts_cursor = collection.find(query).sort("date", -1).limit(10)
         posts = await posts_cursor.to_list(10)
@@ -1028,7 +1037,7 @@ async def get_posts_by_category(db=Depends(get_database)):
             })
             post["hasRecentReplies"] = recent_reply_count > 0
 
-        result[category_name] = posts
+        result[board_name] = posts
 
     return result
 
