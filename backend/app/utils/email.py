@@ -3,37 +3,60 @@ import string
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from app.core.config import settings
 
-def generate_verification_code(length: int = 6) -> str:
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-# FastAPI-Mail ConnectionConfig 생성: 제공자에 따라 TLS/SSL 설정 변경
-if settings.EMAIL_PROVIDER == "naver":
-    conf = ConnectionConfig(
-        MAIL_USERNAME=settings.MAIL_USERNAME,
-        MAIL_PASSWORD=settings.MAIL_PASSWORD,
-        MAIL_FROM=settings.MAIL_FROM,
-        MAIL_PORT=settings.MAIL_PORT,
-        MAIL_SERVER=settings.MAIL_SERVER,
-        MAIL_STARTTLS=False,    # 네이버는 TLS 사용하지 않음
-        MAIL_SSL_TLS=True,      # 네이버는 SSL 사용
-        USE_CREDENTIALS=settings.USE_CREDENTIALS,
-        TEMPLATE_FOLDER=""
+def generate_verification_code(length: int = 6) -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+
+# =========================================================
+# SMTP 설정
+# - Naver: smtp.naver.com / 587 / STARTTLS
+# - Gmail: smtp.gmail.com / 587 / STARTTLS
+# =========================================================
+
+def build_mail_config() -> ConnectionConfig:
+    provider = (settings.EMAIL_PROVIDER or "").lower()
+
+    # 공통 값 (settings에서 읽음)
+    username = settings.MAIL_USERNAME
+    password = settings.MAIL_PASSWORD
+    mail_from = settings.MAIL_FROM
+    use_credentials = getattr(settings, "USE_CREDENTIALS", True)
+
+    # provider별 서버/포트/보안 설정
+    if provider == "naver":
+        server = getattr(settings, "MAIL_SERVER", None) or "smtp.naver.com"
+        port = int(getattr(settings, "MAIL_PORT", 587) or 587)
+
+        # ✅ 587은 STARTTLS가 정석 (SSL로 붙으면 WRONG_VERSION_NUMBER 발생)
+        starttls = True
+        ssl_tls = False
+
+    else:
+        # 기본은 Gmail로 가정 (필요시 settings.MAIL_SERVER/PORT로 덮어씀)
+        server = getattr(settings, "MAIL_SERVER", None) or "smtp.gmail.com"
+        port = int(getattr(settings, "MAIL_PORT", 587) or 587)
+
+        starttls = True
+        ssl_tls = False
+
+    return ConnectionConfig(
+        MAIL_USERNAME=username,
+        MAIL_PASSWORD=password,
+        MAIL_FROM=mail_from,
+        MAIL_PORT=port,
+        MAIL_SERVER=server,
+        MAIL_STARTTLS=starttls,
+        MAIL_SSL_TLS=ssl_tls,
+        USE_CREDENTIALS=use_credentials,
+        TEMPLATE_FOLDER="",  # 템플릿 폴더 안 쓰면 빈 문자열 OK
     )
-else:
-    conf = ConnectionConfig(
-        MAIL_USERNAME=settings.MAIL_USERNAME,
-        MAIL_PASSWORD=settings.MAIL_PASSWORD,
-        MAIL_FROM=settings.MAIL_FROM,
-        MAIL_PORT=settings.MAIL_PORT,
-        MAIL_SERVER=settings.MAIL_SERVER,
-        MAIL_STARTTLS=True,     # Gmail은 TLS 사용
-        MAIL_SSL_TLS=False,     # Gmail은 SSL 미사용
-        USE_CREDENTIALS=settings.USE_CREDENTIALS,
-        TEMPLATE_FOLDER=""
-    )
+
+
+conf = build_mail_config()
+
 
 async def send_verification_email(email: str, code: str):
-    # HTML 템플릿
     html_body = f"""
     <!DOCTYPE html>
     <html lang="ko">
@@ -188,11 +211,13 @@ async def send_verification_email(email: str, code: str):
     """
 
     message = MessageSchema(
-        subject="🌲 연구의숲 회원가입 인증 코드",
+        subject="연구의숲 회원가입 인증 코드",
         recipients=[email],
         body=html_body,
         subtype="html",
-        sender="연구의숲 <" + settings.MAIL_FROM + ">"
+        #  MAIL_FROM은 "연구의숲 <메일주소>" 형태로 넣어두고 그대로 사용
+        sender=settings.MAIL_FROM,
     )
+
     fm = FastMail(conf)
     await fm.send_message(message)
