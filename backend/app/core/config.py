@@ -4,6 +4,27 @@ from dotenv import load_dotenv
 
 load_dotenv()  # .env 파일의 환경변수를 로드합니다.
 
+
+def _env_bool(key: str, default: str = "False") -> bool:
+    """
+    환경변수 bool 파서
+    True 인식: true, 1, yes, y, on
+    """
+    v = os.getenv(key, default)
+    return str(v).strip().lower() in ["true", "1", "yes", "y", "on"]
+
+
+def _first_env(*keys: str, default: str | None = None) -> str | None:
+    """
+    여러 키를 순서대로 조회해서, 첫 번째로 값이 있는 것을 반환.
+    """
+    for k in keys:
+        v = os.getenv(k)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
+
 class Settings:
     API_TITLE = os.getenv("API_TITLE", "My Research Platform API")
     API_VERSION = os.getenv("API_VERSION", "0.1.0")
@@ -25,26 +46,46 @@ class Settings:
     # AI 마이크로서비스 통신 설정
     AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://ai-service:8001")
 
+    # =========================================================
     # 이메일 제공자 선택 ("gmail" 또는 "naver")
-    EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "gmail").lower()
+    # =========================================================
+    EMAIL_PROVIDER = (os.getenv("EMAIL_PROVIDER", "gmail") or "gmail").lower().strip()
 
-    # SMTP 설정: 제공자에 따라 선택
+    # =========================================================
+    # SMTP 설정: "MAIL_* 우선" + "NAVER_/GMAIL_ 폴백"
+    # - 네이버는 기본: 587 + STARTTLS(True) + SSL(False)
+    # - 지메일은 기본: 587 + STARTTLS(True) + SSL(False)
+    # =========================================================
     if EMAIL_PROVIDER == "naver":
-        MAIL_USERNAME = os.getenv("NAVER_MAIL_USERNAME", "your-naver-email@naver.com")
-        MAIL_PASSWORD = os.getenv("NAVER_MAIL_PASSWORD", "your-naver-password")
-        MAIL_FROM = os.getenv("NAVER_MAIL_FROM", "your-naver-email@naver.com")
-        MAIL_PORT = int(os.getenv("NAVER_MAIL_PORT", "465"))
-        MAIL_SERVER = os.getenv("NAVER_MAIL_SERVER", "smtp.naver.com")
-        MAIL_TLS = os.getenv("NAVER_MAIL_TLS", "False").lower() in ["true", "1", "yes"]
-        MAIL_SSL = os.getenv("NAVER_MAIL_SSL", "True").lower() in ["true", "1", "yes"]
+        MAIL_USERNAME = _first_env("MAIL_USERNAME", "NAVER_MAIL_USERNAME", default="your-naver-email@naver.com")
+        MAIL_PASSWORD = _first_env("MAIL_PASSWORD", "NAVER_MAIL_PASSWORD", default="your-naver-password")
+        MAIL_FROM = _first_env("MAIL_FROM", "NAVER_MAIL_FROM", default=MAIL_USERNAME)
+
+        # ✅ 중요: 네이버 기본 포트는 587을 권장 (STARTTLS)
+        # (465를 기본으로 두면, 호스팅 env가 꼬일 때 465로 떨어져 EOF/SSL 오류가 납니다)
+        MAIL_PORT = int(_first_env("MAIL_PORT", "NAVER_MAIL_PORT", default="587") or "587")
+        MAIL_SERVER = _first_env("MAIL_SERVER", "NAVER_MAIL_SERVER", default="smtp.naver.com")
+
+        # ✅ 587이면 STARTTLS=True / SSL=False가 정석
+        # 환경변수로 덮어쓰고 싶으면 MAIL_TLS/MAIL_SSL 또는 NAVER_MAIL_TLS/NAVER_MAIL_SSL 넣으면 됨
+        _tls_default = "True"
+        _ssl_default = "False"
+        MAIL_TLS = _env_bool("MAIL_TLS", _tls_default) if os.getenv("MAIL_TLS") is not None else _env_bool("NAVER_MAIL_TLS", _tls_default)
+        MAIL_SSL = _env_bool("MAIL_SSL", _ssl_default) if os.getenv("MAIL_SSL") is not None else _env_bool("NAVER_MAIL_SSL", _ssl_default)
+
     else:
-        MAIL_USERNAME = os.getenv("GMAIL_MAIL_USERNAME", "your-email@gmail.com")
-        MAIL_PASSWORD = os.getenv("GMAIL_MAIL_PASSWORD", "your-gmail-app-password")
-        MAIL_FROM = os.getenv("GMAIL_MAIL_FROM", "your-email@gmail.com")
-        MAIL_PORT = int(os.getenv("GMAIL_MAIL_PORT", "587"))
-        MAIL_SERVER = os.getenv("GMAIL_MAIL_SERVER", "smtp.gmail.com")
-        MAIL_TLS = os.getenv("GMAIL_MAIL_TLS", "True").lower() in ["true", "1", "yes"]
-        MAIL_SSL = os.getenv("GMAIL_MAIL_SSL", "False").lower() in ["true", "1", "yes"]
+        # gmail (기본)
+        MAIL_USERNAME = _first_env("MAIL_USERNAME", "GMAIL_MAIL_USERNAME", default="your-email@gmail.com")
+        MAIL_PASSWORD = _first_env("MAIL_PASSWORD", "GMAIL_MAIL_PASSWORD", default="your-gmail-app-password")
+        MAIL_FROM = _first_env("MAIL_FROM", "GMAIL_MAIL_FROM", default=MAIL_USERNAME)
+
+        MAIL_PORT = int(_first_env("MAIL_PORT", "GMAIL_MAIL_PORT", default="587") or "587")
+        MAIL_SERVER = _first_env("MAIL_SERVER", "GMAIL_MAIL_SERVER", default="smtp.gmail.com")
+
+        _tls_default = "True"
+        _ssl_default = "False"
+        MAIL_TLS = _env_bool("MAIL_TLS", _tls_default) if os.getenv("MAIL_TLS") is not None else _env_bool("GMAIL_MAIL_TLS", _tls_default)
+        MAIL_SSL = _env_bool("MAIL_SSL", _ssl_default) if os.getenv("MAIL_SSL") is not None else _env_bool("GMAIL_MAIL_SSL", _ssl_default)
 
     # (과거 쿠키 기반 사용 여부 플래그였던 값 – 지금은 헤더 기반이라 실제로 사용 안 해도 무방)
     USE_CREDENTIALS = True
