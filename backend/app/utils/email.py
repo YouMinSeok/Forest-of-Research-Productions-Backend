@@ -1,44 +1,103 @@
+import os
 import random
 import string
+import logging
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from app.core.config import settings
+
+logger = logging.getLogger("email")
+logger.setLevel(logging.INFO)
 
 
 def generate_verification_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
-# =========================================================
-# SMTP 설정
-# - Naver: smtp.naver.com / 587 / STARTTLS
-# - Gmail: smtp.gmail.com / 587 / STARTTLS
-# =========================================================
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return "None"
+    if len(value) <= 2:
+        return value[0] + "*"
+    return value[:2] + "*" * (len(value) - 2)
+
+
+def log_mail_env_and_settings():
+    """
+    호스팅에서 'UI는 587인데 앱은 465로 붙는다' 같은 문제를 잡기 위한 로그.
+    - env에서 뭐가 들어왔는지
+    - settings가 뭐로 파싱했는지
+    를 둘 다 찍습니다.
+    """
+    try:
+        logger.info("=== MAIL DEBUG (ENV) ===")
+        logger.info("ENV EMAIL_PROVIDER=%s", os.getenv("EMAIL_PROVIDER"))
+        logger.info("ENV MAIL_SERVER=%s", os.getenv("MAIL_SERVER"))
+        logger.info("ENV MAIL_PORT=%s", os.getenv("MAIL_PORT"))
+        logger.info("ENV MAIL_TLS=%s", os.getenv("MAIL_TLS"))
+        logger.info("ENV MAIL_SSL=%s", os.getenv("MAIL_SSL"))
+        logger.info("ENV MAIL_USERNAME=%s", os.getenv("MAIL_USERNAME"))
+        logger.info("ENV MAIL_PASSWORD(masked)=%s", _mask_secret(os.getenv("MAIL_PASSWORD")))
+        logger.info("ENV NAVER_MAIL_USERNAME=%s", os.getenv("NAVER_MAIL_USERNAME"))
+        logger.info("ENV NAVER_MAIL_PASSWORD(masked)=%s", _mask_secret(os.getenv("NAVER_MAIL_PASSWORD")))
+        logger.info("========================")
+
+        logger.info("=== MAIL DEBUG (SETTINGS) ===")
+        logger.info("settings.EMAIL_PROVIDER=%s", getattr(settings, "EMAIL_PROVIDER", None))
+        logger.info("settings.MAIL_SERVER=%s", getattr(settings, "MAIL_SERVER", None))
+        logger.info("settings.MAIL_PORT=%s", getattr(settings, "MAIL_PORT", None))
+        logger.info("settings.MAIL_TLS=%s", getattr(settings, "MAIL_TLS", None))
+        logger.info("settings.MAIL_SSL=%s", getattr(settings, "MAIL_SSL", None))
+        logger.info("settings.MAIL_USERNAME=%s", getattr(settings, "MAIL_USERNAME", None))
+        logger.info("settings.MAIL_PASSWORD(masked)=%s", _mask_secret(getattr(settings, "MAIL_PASSWORD", None)))
+        logger.info("==============================")
+    except Exception as e:
+        logger.warning("MAIL DEBUG LOG FAILED: %s", e)
+
 
 def build_mail_config() -> ConnectionConfig:
-    provider = (settings.EMAIL_PROVIDER or "").lower()
+    """
+    SMTP 설정
+    - Naver: smtp.naver.com / 587 / STARTTLS(=MAIL_STARTTLS=True, MAIL_SSL_TLS=False)
+    - Gmail: smtp.gmail.com / 587 / STARTTLS
+    """
+    provider = (getattr(settings, "EMAIL_PROVIDER", "") or "").lower().strip()
 
-    # 공통 값 (settings에서 읽음)
-    username = settings.MAIL_USERNAME
-    password = settings.MAIL_PASSWORD
-    mail_from = settings.MAIL_FROM
+    # settings에서 읽되, 없으면 NAVER_*도 폴백 (호스팅에서 키를 섞어 넣는 경우 방어)
+    username = getattr(settings, "MAIL_USERNAME", None) or os.getenv("MAIL_USERNAME") or os.getenv("NAVER_MAIL_USERNAME")
+    password = getattr(settings, "MAIL_PASSWORD", None) or os.getenv("MAIL_PASSWORD") or os.getenv("NAVER_MAIL_PASSWORD")
+    mail_from = getattr(settings, "MAIL_FROM", None) or os.getenv("MAIL_FROM") or os.getenv("NAVER_MAIL_FROM")
+
+    # 서버/포트 폴백
+    if provider == "naver":
+        server = getattr(settings, "MAIL_SERVER", None) or os.getenv("MAIL_SERVER") or os.getenv("NAVER_MAIL_SERVER") or "smtp.naver.com"
+        port_raw = getattr(settings, "MAIL_PORT", None) or os.getenv("MAIL_PORT") or os.getenv("NAVER_MAIL_PORT") or "587"
+        port = int(str(port_raw).strip())
+
+        # ✅ 네이버 587은 STARTTLS
+        starttls = True
+        ssl_tls = False
+    else:
+        server = getattr(settings, "MAIL_SERVER", None) or os.getenv("MAIL_SERVER") or "smtp.gmail.com"
+        port_raw = getattr(settings, "MAIL_PORT", None) or os.getenv("MAIL_PORT") or "587"
+        port = int(str(port_raw).strip())
+
+        # ✅ 지메일도 587 STARTTLS
+        starttls = True
+        ssl_tls = False
+
     use_credentials = getattr(settings, "USE_CREDENTIALS", True)
 
-    # provider별 서버/포트/보안 설정
-    if provider == "naver":
-        server = getattr(settings, "MAIL_SERVER", None) or "smtp.naver.com"
-        port = int(getattr(settings, "MAIL_PORT", 587) or 587)
-
-        # ✅ 587은 STARTTLS가 정석 (SSL로 붙으면 WRONG_VERSION_NUMBER 발생)
-        starttls = True
-        ssl_tls = False
-
-    else:
-        # 기본은 Gmail로 가정 (필요시 settings.MAIL_SERVER/PORT로 덮어씀)
-        server = getattr(settings, "MAIL_SERVER", None) or "smtp.gmail.com"
-        port = int(getattr(settings, "MAIL_PORT", 587) or 587)
-
-        starttls = True
-        ssl_tls = False
+    # 최종 적용값 로그(여기서 465가 찍히면 settings/ENV가 그렇게 들어온 겁니다)
+    logger.info("=== MAIL DEBUG (FINAL CONFIG) ===")
+    logger.info("provider=%s", provider)
+    logger.info("server=%s", server)
+    logger.info("port=%s", port)
+    logger.info("MAIL_STARTTLS=%s", starttls)
+    logger.info("MAIL_SSL_TLS=%s", ssl_tls)
+    logger.info("username=%s", username)
+    logger.info("password(masked)=%s", _mask_secret(password))
+    logger.info("from=%s", mail_from)
+    logger.info("===============================")
 
     return ConnectionConfig(
         MAIL_USERNAME=username,
@@ -49,14 +108,17 @@ def build_mail_config() -> ConnectionConfig:
         MAIL_STARTTLS=starttls,
         MAIL_SSL_TLS=ssl_tls,
         USE_CREDENTIALS=use_credentials,
-        TEMPLATE_FOLDER="",  # 템플릿 폴더 안 쓰면 빈 문자열 OK
+        TEMPLATE_FOLDER="",
     )
 
 
-conf = build_mail_config()
-
-
 async def send_verification_email(email: str, code: str):
+    # ✅ 가장 먼저: 지금 런타임에서 실제로 뭐가 읽히는지 찍기
+    log_mail_env_and_settings()
+
+    # ✅ 요청 시점에 config 생성(호스팅 env 변경/재배포 반영 확인용)
+    conf = build_mail_config()
+
     html_body = f"""
     <!DOCTYPE html>
     <html lang="ko">
@@ -215,8 +277,8 @@ async def send_verification_email(email: str, code: str):
         recipients=[email],
         body=html_body,
         subtype="html",
-        #  MAIL_FROM은 "연구의숲 <메일주소>" 형태로 넣어두고 그대로 사용
-        sender=settings.MAIL_FROM,
+        # settings.MAIL_FROM 자체를 "연구의숲 <메일주소>" 형태로 넣었다면 그대로 사용
+        sender=getattr(settings, "MAIL_FROM", None) or os.getenv("MAIL_FROM") or os.getenv("NAVER_MAIL_FROM"),
     )
 
     fm = FastMail(conf)
